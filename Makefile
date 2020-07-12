@@ -18,7 +18,7 @@ include $(TOP)/configure/RULES_TOP
 
 
 test:
-	bin/linux-x86/ether_ip_test -i 160.91.232.217 -v 10 K_RealArray_10[2] 
+	bin/linux-x86_64/ether_ip_test -i 160.91.232.217 -v 10 K_RealArray_10[2] 
 
 val:
-	valgrind --trace-children=yes --leak-check=full --show-reachable=yes bin/linux-x86/ether_ip_test -i 160.91.232.217 -v 1 K_RealArray_10[2] 
+	valgrind -s bin/linux-x86_64/ether_ip_test -i 10.0.38.199 -s 1 -v 10 -T 5 -m 

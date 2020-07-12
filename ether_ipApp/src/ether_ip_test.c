@@ -14,14 +14,19 @@
 #include<time.h>
 #include"ether_ip.c"
 
-#ifdef DEFINE_CONNECTED_METHODS
+#if 0 // Not enough support for connected messaging. Only adds longer timeouts and reduces performance.
 
 eip_bool ForwardOpen(EIPConnection *c)
 {
+    TransactionID pid;
+    const CN_USINT *response;
+    CN_USINT    service, general_status;
     size_t      request_size = CM_Forward_Open_size ();
     MR_Request  *request;
     EncapsulationRRData      *data;
     CM_Forward_Open_Good_Response   *open_response;
+
+    generateTransactionId(&pid);
 
     calc_tick_time (245760,
                     &c->params.priority_and_tick,
@@ -32,7 +37,7 @@ eip_bool ForwardOpen(EIPConnection *c)
     c->params.vendor_ID = 0xface;
     c->params.originator_serial = 0xeffec;
 
-    request = EIP_make_SendRRData (c, request_size);
+    request = EIP_make_SendRRData (c, request_size, &pid);
     if (! request)
         return false;
 
@@ -53,40 +58,31 @@ eip_bool ForwardOpen(EIPConnection *c)
         return 0;
     }
     data = (EncapsulationRRData *) c->buffer;
+    response = EIP_unpack_RRData((CN_USINT *)c->buffer, &data);
 
-    if (data->rr.response.general_status != 0)
+    unpack(response, "sSs", &service, &general_status);
+	
+    if (&general_status != 0)
     {
-        dump_CM_Forward_Open_Response (&data->rr.response, data->data_length);
+        //dump_CM_Forward_Open_Response (&response, data->data_length);
         return false;
     }
-
-    open_response = (CM_Forward_Open_Good_Response *)
-        EIP_MR_Response_data (&data->rr.response, data->data_length, 0);
-    c->params.O2T_CID = open_response->O2T_CID;
-
-#define CHECK(ITEM)                             \
-    if (open_response->ITEM != c->params.ITEM)  \
-    {                                           \
-        printf ("different " # ITEM "\n");      \
-        return false;                           \
-    }
-    CHECK (T2O_CID)
-    CHECK (connection_serial)
-    CHECK (vendor_ID)
-    CHECK (originator_serial)
-#undef CHECK
 
     return true;
 }
 
 eip_bool ForwardClose(EIPConnection *c)
 {
+    const CN_USINT *response;
+    CN_USINT       service, general_status;
     size_t      request_size = CM_Forward_Close_size ();
     MR_Request  *request;
     EncapsulationRRData      *data;
     CM_Forward_Close_Good_Response  *close_response;
+    TransactionID pid;
+    generateTransactionId(&pid);
 
-    request = EIP_make_SendRRData (c, request_size);
+    request = EIP_make_SendRRData (c, request_size, &pid);
     if (! request)
         return false;
 
@@ -106,59 +102,37 @@ eip_bool ForwardClose(EIPConnection *c)
         return 0;
     }
     data = (EncapsulationRRData *) c->buffer;
-    close_response = (CM_Forward_Close_Good_Response *)
-        EIP_MR_Response_data (&data->rr.response, data->data_length, 0);
-    if (data->rr.response.general_status)
+    response = EIP_unpack_RRData((CN_USINT *)c->buffer, &data);
+
+    unpack(response, "sSs", &service, &general_status);
+
+    if (general_status)
     {
         printf ("Forward_Close Error: ");
-        if (data->rr.response.general_status == 0x01  &&
-            data->rr.response.extended_status_size == 1)
-        {
-            const CN_UINT *ext = MR_Response_ext_stat (&data->rr.response);
-            switch (*ext)
-            {
-            case 0x0107: printf ("Connection not found\n");
-                         return false;
-            }
-        }
 
-        dump_MR_Response (&data->rr.response, data->data_length);
+        EIP_dump_raw_MR_Response (&response, data->data_length);
         return false;
     }
-
-#define CHECK(ITEM)                             \
-    if (close_response->ITEM != c->params.ITEM) \
-    {                                           \
-        printf ("different " # ITEM "\n");      \
-        return false;                           \
-    }
-    CHECK (connection_serial)
-    CHECK (vendor_ID)
-    CHECK (originator_serial)
-#undef CHECK
 
     return true;
 }
 
-eip_bool ReadConnected(EIPConnection *c, size_t count, const ParsedTag *tag[])
+#endif
+
+eip_bool ReadConnected(EIPConnection *c, size_t count, const ParsedTag *tag[], size_t multi_size, size_t send_size)
 {
-    size_t  i, msg_size[40], requests_size = 0, multi_size,
-            single_response_size;
+    size_t i, msg_size[40], single_response_size, data_size;
     MR_Request  *multi_request, *single_request;
     const MR_Response  *response, *single_response;
     EncapsulationUnitData      *unit_data;
     static CN_USINT sequence = 0;
-    CN_USINT *data;
-    size_t   data_size;
+    CN_USINT *data, *send_request;
 
-    /* size indiv. requests, pack into multi request, then Unconn. send */
-    for (i=0; i<count; ++i)
-    {
-        msg_size[i] = CIP_ReadData_size (tag[i]);
-        requests_size += msg_size[i];
-    }
-    multi_size = CIP_MultiRequest_size (count, requests_size);
-    multi_request = make_SendUnitData (c, multi_size, ++sequence);
+    TransactionID tid;
+    generateTransactionId(&tid);
+    send_request = EIP_make_SendRRData(c, send_size, &tid); // These are transaction/sequence dependent. It's better not to optimize them to preserve
+    multi_request = make_CM_Unconnected_Send(send_request,  // consistency.
+                                    multi_size, 1);
     if (! multi_request)
         return false;
     if (! prepare_CIP_MultiRequest (multi_request, count))
@@ -186,12 +160,6 @@ eip_bool ReadConnected(EIPConnection *c, size_t count, const ParsedTag *tag[])
     unit_data = (EncapsulationUnitData *) c->buffer;
     response = &unit_data->rr.response;
 
-    if (! check_CIP_MultiRequest_Response (response))
-    {
-        EIP_dump_connection (c);
-        return false;
-    }
-
     for (i=0; i<count; ++i)
     {
         single_response =
@@ -202,7 +170,7 @@ eip_bool ReadConnected(EIPConnection *c, size_t count, const ParsedTag *tag[])
         if (! single_response)
             return false;
 
-        if (check_CIP_ReadData_Response (single_response, single_response_size))
+        if (check_CIP_ReadData_Response (single_response, single_response_size, 2))
         {
             data = EIP_raw_MR_Response_data (single_response, single_response_size,
                                              &data_size);
@@ -212,6 +180,8 @@ eip_bool ReadConnected(EIPConnection *c, size_t count, const ParsedTag *tag[])
 
     return true;
 }
+
+#if 0
 
 void TestConnected(EIPConnection *c, const ParsedTag *tag[])
 {
@@ -226,10 +196,6 @@ void TestConnected(EIPConnection *c, const ParsedTag *tag[])
         printf ("OK.\n");
 }
 
-#endif /* DEFINE_CONNECTED_METHODS */
-
-
-#if 0
 void stressC(EIPConnection *c, size_t count, const ParsedTag *tag[], size_t runs)
 {
     TimerValue t;
@@ -300,11 +266,14 @@ void usage(const char *progname)
     fprintf(stderr, "    -a array size\n");
     fprintf(stderr, "    -w <double value to write>\n");
     fprintf(stderr, "    -T times-to-do-all-this (default: 1)\n");
+    fprintf(stderr, "    -m file run multirequest test with instead of single tag\n");
+
     exit(-1);
 }
 
 int main (int argc, const char *argv[])
 {
+    int             multi = 0;
     EIPConnection   *c = EIP_init();
     const char      *ip = "172.31.72.94";
     unsigned short  port = 0xAF12;
@@ -317,6 +286,7 @@ int main (int argc, const char *argv[])
     CN_REAL         writeval;
     eip_bool        write = false;
     size_t          test_runs = 1;
+    char 	    *file_input = "input.txt";
 #ifndef _WIN32
     struct timeval  now;
 #endif
@@ -377,6 +347,11 @@ int main (int argc, const char *argv[])
                 if (test_runs <= 0)
                     test_runs = 1;
                 break;
+            case 'm':
+	    GETARG
+		file_input = arg;
+		multi = 1;
+                break;
             default:
                 usage (argv[0]);
 #undef          GETARG
@@ -399,11 +374,45 @@ int main (int argc, const char *argv[])
     gettimeofday(&now, NULL);
     start = now.tv_sec + now.tv_usec/1000000.0;
 #endif
+
+int line_count=0;
+char cl;
+FILE *ft = fopen(file_input, "r");
+ if (ft == NULL){
+        fprintf(stderr, "Tag input file error");
+        exit(1);
+}
+
+while((cl=fgetc(ft))!=EOF) {
+      	if(cl=='\n'){
+         	line_count++;
+	}
+}
+
+i=0;
+char *tags[line_count];
+tags[i] = malloc(100);
+  while (fgets(tags[i], 100, ft)) {
+        i++;
+        tags[i] = malloc(100);
+} 
+
+FILE *f = fopen("log.txt", "w");
+ParsedTag *pTags[line_count];
+int j;
+for(j = 0; j < line_count; j++)
+{
+pTags[j] = EIP_parse_tag(tags[j]);
+}
+
+size_t tag_amount = sizeof(pTags)/sizeof(pTags[0]);
+
+EIP_startup(c, ip, port, slot, timeout_ms);
+
+if(multi < 1){
     for (i=0; i<test_runs; ++i)
     {
-        if (EIP_startup(c, ip, port, slot, timeout_ms) && tag)
-        {
-            const CN_USINT *data = 0;
+	const CN_USINT *data = 0;
             size_t data_len;
             if (write)
             {
@@ -415,9 +424,24 @@ int main (int argc, const char *argv[])
                 data = EIP_read_tag(c, tag, elements, &data_len, 0, 0);
             if (data)
                 dump_raw_CIP_data (data, elements);
-        }
-        EIP_shutdown (c);
     }
+} else {
+    for (i=0; i<test_runs; ++i)
+    {
+       gettimeofday(&now, NULL);
+       start = now.tv_sec + now.tv_usec/1000000.0;
+       
+       ReadConnected(c,tag_amount,pTags);
+
+       gettimeofday(&now, NULL);
+       end = now.tv_sec + now.tv_usec/1000000.0;
+       duration = (double)((end - start)*1000.0);
+       fprintf(f, "%f\n", duration);
+       usleep(100000);
+    }
+}
+
+    EIP_shutdown (c);
     EIP_free_ParsedTag (tag);
     tag = 0;
 #ifdef _WIN32
@@ -426,12 +450,6 @@ int main (int argc, const char *argv[])
     gettimeofday(&now, NULL);
     end = now.tv_sec + now.tv_usec/1000000.0;
 #endif
-    duration = (double)(end - start);
-    printf("%d test runs, %g seconds -> %f ms / tag\n",
-           (unsigned)test_runs,
-           duration,
-           duration / test_runs * 1000.0);
-
     EIP_dispose(c);
 
 #ifdef _WIN32

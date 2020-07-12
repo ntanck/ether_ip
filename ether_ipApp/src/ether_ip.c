@@ -2513,7 +2513,7 @@ void EIP_shutdown (EIPConnection *c)
  * When an "open" for automatic updated becomes available,
  * this might be interesting again.
  */
-#ifdef DEFINE_CONNECTED_METHODS
+#if 1
 
 static void dump_CM_priority_and_tick (CN_USINT pat, CN_UINT ticks)
 {
@@ -2543,7 +2543,7 @@ static void dump_CM_Unconnected_Send (const MR_Request *request)
     EIP_printf (0, "    UINT  message_size             = %d\n",
                 send_data->message_size);
     EIP_printf (0, "    message_router_PDU: ");
-    EIP_hexdump (&send_data->message_router_PDU, send_data->message_size);
+    EIP_hexdump (0, &send_data->message_router_PDU, send_data->message_size);
     dump_raw_MR_Request (&send_data->message_router_PDU);
 
     send_data2 = (CM_Unconnected_Send_Request_2 *)
@@ -2652,7 +2652,7 @@ static eip_bool make_CM_Forward_Open (MR_Request *request, EIPConnectionParamete
     request->path_size = CIA_path_size (C_ConnectionManager, 1, 0);
     make_CIA_path (request->path, C_ConnectionManager, 1, 0);
 
-    open_data = (CM_Forward_Open_Request *) MR_Request_data (request);
+    open_data = (CM_Forward_Open_Request *) raw_MR_Request_data (request);
     /* could memcpy, but not sure if EIPConnectionParameters will stay as it is */
     open_data->priority_and_tick        = params->priority_and_tick;
     open_data->connection_timeout_ticks = params->connection_timeout_ticks;
@@ -2689,9 +2689,9 @@ static void dump_CM_Forward_Open (const MR_Request *request)
     const CM_Forward_Open_Request *open_data;
 
     dump_raw_MR_Request (request);
-    open_data = (const CM_Forward_Open_Request *) MR_Request_data (request);
+    open_data = (const CM_Forward_Open_Request *) raw_MR_Request_data (request);
 
-    EIP_printf (0, "    USINT priority_and_tick             = 0x%02X\n", open_data->priority_and_tick);
+    EIP_printf (0, "    USINT +priority_and_tick             = 0x%02X\n", open_data->priority_and_tick);
     EIP_printf (0, "    USINT connection_timeout_ticks      = %d -> ", open_data->connection_timeout_ticks);
     dump_CM_priority_and_tick (open_data->priority_and_tick, open_data->connection_timeout_ticks);
     EIP_printf (0, "    UDINT O2T_CID                       = 0x%08X\n", open_data->O2T_CID);
@@ -2731,7 +2731,7 @@ static void dump_CM_Forward_Open_Response (const MR_Response *response,
     {
         EIP_dump_raw_MR_Response (response, offsetof (MR_Response, response));
         data = (CM_Forward_Open_Good_Response *)
-               EIP_MR_Response_data (response, response_size, 0);
+               EIP_raw_MR_Response_data (response, response_size, 0);
         EIP_printf (10, "Forward_Open_Response:\n");
         EIP_printf (10, "    UDINT O2T_CID                       = 0x%08X\n",
                     data->O2T_CID);
@@ -2750,7 +2750,7 @@ static void dump_CM_Forward_Open_Response (const MR_Response *response,
         EIP_printf (10, "    USINT application_reply_size        = %d\n",
                     data->application_reply_size);
         EIP_printf (10, "    USINT application_reply[]           = ");
-        EIP_hexdump (&data->application_reply, data->application_reply_size*2);
+        EIP_hexdump (0, &data->application_reply, data->application_reply_size*2);
     }
 }
 
@@ -2761,15 +2761,19 @@ static void dump_CM_Forward_Open_Response (const MR_Response *response,
  * Returns pointer to MR_Request to be completed.
  */
 static MR_Request *make_SendUnitData (EIPConnection *c, size_t PDU_size, CN_UINT sequence_number)
+
 {
+    TransactionID pid;
     EncapsulationUnitData *buf;
+
+    generateTransactionId(&pid);
 
     if (! make_EncapsulationHeader (c, EC_SendUnitData,
                         (CN_UINT)
-                         (offsetof(EncapsulationUnitData, rr)
+                        (offsetof(EncapsulationUnitData, rr)
                           - sizeof (EncapsulationHeader)
                           + PDU_size
-                         ), 0 /* options */))
+                        ), 0, &pid ))
         return 0;
 
     buf = (EncapsulationUnitData *) c->buffer;
@@ -2786,6 +2790,7 @@ static MR_Request *make_SendUnitData (EIPConnection *c, size_t PDU_size, CN_UINT
 
     return & buf->rr.request;
 }
+
 
 /********************************************************
  * Support for CM_Forward_Close
@@ -2811,7 +2816,7 @@ static eip_bool make_CM_Forward_Close (MR_Request *request, const EIPConnectionP
     request->path_size = CIA_path_size (C_ConnectionManager, 1, 0);
     make_CIA_path (request->path, C_ConnectionManager, 1, 0);
 
-    close_data = (CM_Forward_Close_Request *) MR_Request_data (request);
+    close_data = (CM_Forward_Close_Request *) raw_MR_Request_data (request);
     close_data->priority_and_tick        = params->priority_and_tick;
     close_data->connection_timeout_ticks = params->connection_timeout_ticks;
     close_data->connection_serial        = params->connection_serial;
@@ -2987,5 +2992,6 @@ eip_bool EIP_write_tag(EIPConnection *c, const ParsedTag *tag,
 
     return true;
 }
+
 
 
